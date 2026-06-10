@@ -1,0 +1,73 @@
+name: Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# The integration smoke exercises the action's shipped production defaults:
+# the Packagist registry at packagist.flatt.tech. The job no longer overrides
+# registry-url — passing nothing is the point, so a regression in the shipped
+# default fails CI. TEST_REGISTRY_HOST is the default registry host, used only
+# by the log/grep assertions below.
+env:
+  TEST_REGISTRY_HOST: packagist.flatt.tech
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate action.yml
+        run: |
+          python3 -c "import yaml; yaml.safe_load(open('action.yml'))"
+          echo "action.yml is valid YAML"
+
+      - name: Check required fields
+        run: |
+          grep -q 'using:.*composite' action.yml
+          grep -q "bot-id:" action.yml
+          grep -q "set-repository:" action.yml
+          grep -q "packagist.flatt.tech" action.yml
+          echo "Required fields present"
+
+  integration-anonymous:
+    # Smoke-tests anonymous mode against the production registry (default).
+    # End-to-end validation across modes lives in
+    # flatt-security/setup-takumi-guard-packagist-test; this job is a
+    # self-contained sanity check inside the action repo.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+
+      - uses: ./
+
+      - name: Verify COMPOSER_AUTH is not set in anonymous mode
+        run: |
+          if [ -n "${COMPOSER_AUTH:-}" ]; then
+            echo "::error::anonymous mode must not set COMPOSER_AUTH"
+            exit 1
+          fi
+          echo "OK: COMPOSER_AUTH not set in anonymous mode"
+
+      - name: Verify global Composer repository is configured
+        run: |
+          composer config --global --list | grep -q "$TEST_REGISTRY_HOST" \
+            || (echo "::error::$TEST_REGISTRY_HOST not found in global composer config"; exit 1)
+          echo "Global Composer repository points to $TEST_REGISTRY_HOST"
+
+      - name: Fetch a real package through the proxy
+        run: |
+          mkdir -p /tmp/probe && cd /tmp/probe
+          composer init --name=probe/probe --no-interaction
+          composer require --no-interaction -vvv psr/log:^3.0 2>&1 | tee require.log
+          grep -q "$TEST_REGISTRY_HOST" require.log \
+            || (echo "::error::composer require did not route through $TEST_REGISTRY_HOST"; exit 1)
+          echo "OK: package fetched through the production proxy"
