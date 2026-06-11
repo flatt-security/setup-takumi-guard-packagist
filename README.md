@@ -167,13 +167,13 @@ steps:
 
 ## Adopting Takumi Guard
 
-Composer embeds the package source URL in `composer.lock`. Adopting the proxy requires a lockfile update.
-
-**For most projects:** The action configures a global Composer `composer`-type repository at `packagist.flatt.tech` and disables `packagist.org`. Run `composer update --lock` once after adding the action to regenerate the lockfile with the new source URLs, then commit the updated `composer.lock`.
+**Blocking works immediately — no lockfile changes needed.** The action configures a global Composer `composer`-type repository at `packagist.flatt.tech` and disables `packagist.org`. On **Composer 2.10+**, the proxy's dependency-policy filter blocks malicious packages during `composer install` and `composer update`, **including installs from an existing, unmodified `composer.lock`**. Older Composer versions block during `composer update` / `composer require` only.
 
 **For projects with private packages:** Private Composer repositories (e.g. `satis`, Private Packagist, VCS sources) declared in `composer.json` under `repositories` are unaffected — they resolve directly. The action only redirects the default `packagist.org` source.
 
 **For projects with vendored dependencies:** Nothing to do. `composer install --no-dev` with a committed `vendor/` reads from the local copy and never hits the network.
+
+> **Optional — download tracking.** Composer embeds each package's download URL in `composer.lock`. To route downloads through the proxy (so installs are tracked and breach notifications cover the exact versions you ran), run `composer update mirrors` once and commit the result — it rewrites only the lock's download URLs, not package versions. This is **not required for blocking**; it accrues automatically the next time you `composer update`.
 
 > **No packagist.org fallback.** The action disables `packagist.org` as a source. If the Guard proxy returns an error for a package, Composer will not silently fall back to fetching it directly from `packagist.org` — this is intentional to preserve the blocklist guarantee.
 
@@ -185,6 +185,7 @@ Composer embeds the package source URL in `composer.lock`. Adopting the proxy re
 |---|---|---|---|
 | `bot-id` | No | -- | Bot ID from Shisho Cloud byGMO. Omit for blocking-only mode. |
 | `set-repository` | No | `true` | Configure the global Composer repository and disable packagist.org. Set to `false` if you manage repositories yourself. |
+| `fail-closed` | No | `false` | Set `policy.ignore-unreachable=false` so `composer install`/`update` **fail** if the Guard proxy is unreachable, instead of proceeding unblocked. Recommended for CI that must never install while the proxy is down. Composer 2.10+. |
 | `registry-url` | No | `https://packagist.flatt.tech` | Registry endpoint (must speak the Composer repository protocol). |
 | `sts-url` | No | `https://sts.cloud.shisho.dev` | STS endpoint for token exchange. |
 | `expires-in` | No | `1800` | Token lifetime in seconds (max 86400). |
@@ -208,7 +209,8 @@ Composer embeds the package source URL in `composer.lock`. Adopting the proxy re
 | `STS returned HTTP N without an access_token` | STS rejected the auth request | The job log includes STS's own message inside this error. Common cases: `invalid ID token` -- trust condition mismatch, check the bot's trust settings in Shisho Cloud byGMO; `invalid request` -- malformed bot-id, double-check the value from your console. |
 | `GitHub OIDC token fetch failed` | Could not reach `token.actions.githubusercontent.com` or got a non-200 response | Usually transient; the action retries up to 3 times. Persistent failures point at a GitHub Actions issue. |
 | `composer: command not found` | PHP/Composer not installed before this action | Add `shivammathur/setup-php@v2` before `setup-takumi-guard-packagist` |
-| `Package X not found` after enabling | Package is blocked, or `composer.lock` still references `packagist.org` URLs | Run `composer update --lock` to regenerate the lockfile with the new repository source |
+| `... was flagged as malware` / resolution fails for a specific package | The package (or the locked version) is on the blocklist — this is the proxy working | Use a non-blocked version. To inspect, run `composer audit --locked`. |
+| `Package X not found` after enabling | A private package is resolving through the proxy instead of its own repository | Declare the private package as its own `vcs`/`path`/`satis` repository in `composer.json` (see Adopting Takumi Guard) |
 | Build silently fetches from packagist.org | `set-repository: false` without configuring the repository in `composer.json` | Either remove `set-repository: false` or add the `repositories` block to `composer.json` yourself |
 
 > **Still stuck?** Open an issue on this repository with your error output and workflow file (redact any IDs).
