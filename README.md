@@ -189,6 +189,7 @@ steps:
 | `registry-url` | No | `https://packagist.flatt.tech` | Registry endpoint (must speak the Composer repository protocol). |
 | `sts-url` | No | `https://sts.cloud.shisho.dev` | STS endpoint for token exchange. |
 | `expires-in` | No | `1800` | Token lifetime in seconds (max 86400). |
+| `audience` | No | `https://sts.cloud.shisho.dev` (the STS URL) | Audience for the OIDC token request. Override when your Bot trust condition expects a different value. |
 
 ---
 
@@ -206,7 +207,7 @@ steps:
 |---|---|---|
 | `OIDC not available` | Missing permission on the job | Add `permissions: { id-token: write }` to your job |
 | `STS returned non-JSON (HTTP N)` | An error response from STS or an upstream layer was not valid JSON (e.g. an HTML error page from a transient outage) | Usually a transient infrastructure issue. The HTTP status and a body snippet are echoed to the log to help diagnose. |
-| `STS returned HTTP N without an access_token` | STS rejected the auth request | The job log includes STS's own message inside this error. Common cases: `invalid ID token` -- trust condition mismatch, check the bot's trust settings in Shisho Cloud byGMO; `invalid request` -- malformed bot-id, double-check the value from your console. |
+| `STS returned HTTP N without an access_token` | STS rejected the auth request | The job log includes STS's own message inside this error. Common cases: `invalid ID token` -- trust condition mismatch, check the bot's trust settings in Shisho Cloud byGMO (if the trust condition sets an audience, it must equal the value the action sends -- by default the STS URL, overridable via the `audience` input); `invalid request` -- malformed bot-id, double-check the value from your console. |
 | `GitHub OIDC token fetch failed` | Could not reach `token.actions.githubusercontent.com` or got a non-200 response | Usually transient; the action retries up to 3 times. Persistent failures point at a GitHub Actions issue. |
 | `composer: command not found` | PHP/Composer not installed before this action | Add `shivammathur/setup-php@v2` before `setup-takumi-guard-packagist` |
 | `... was flagged as malware` / resolution fails for a specific package | The package (or the locked version) is on the blocklist — this is the proxy working | Use a non-blocked version. To inspect, run `composer audit --locked`. |
