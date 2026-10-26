@@ -209,8 +209,8 @@ The action sets `COMPOSER_AUTH` for the rest of the job, so a step that runs Com
 
 - name: Install in a container
   run: |
-    docker run --rm -e COMPOSER_AUTH -v "$PWD:/app" -w /app composer:2 \
-      sh -c 'composer config --global repositories.takumi-guard composer https://packagist.flatt.tech && composer config --global repositories.packagist.org false && composer install --no-interaction'
+    docker run --rm --user "$(id -u):$(id -g)" -e COMPOSER_AUTH -v "$PWD:/app" -w /app composer:2 \
+      sh -c 'composer config --global repositories.packagist composer https://packagist.flatt.tech && composer config --global repositories.packagist.org false && composer install --no-interaction'
 ```
 
 If you set `registry-url`, use its URL in the repository configuration.
@@ -226,7 +226,7 @@ For `docker build`, hand `COMPOSER_AUTH` to BuildKit as a secret:
 FROM composer:2
 WORKDIR /app
 COPY composer.json composer.lock ./
-RUN composer config --global repositories.takumi-guard composer https://packagist.flatt.tech \
+RUN composer config --global repositories.packagist composer https://packagist.flatt.tech \
  && composer config --global repositories.packagist.org false
 RUN --mount=type=secret,id=composer_auth,env=COMPOSER_AUTH \
     composer install --no-interaction
@@ -234,7 +234,7 @@ RUN --mount=type=secret,id=composer_auth,env=COMPOSER_AUTH \
 
 The secret is set as an environment variable for that one `RUN` and never becomes a layer, so the token stays out of the image and out of build args. The token is a credential for your bot: do not pass it with `docker build --build-arg` or write it into an image, because build arguments and image layers keep it after the job ends.
 
-The `token` output holds the bare token, for a tool that needs it in another form than `COMPOSER_AUTH`, such as an `auth.json` you write yourself.
+The `token` output holds the bare token, for a tool that needs it in a form other than `COMPOSER_AUTH`, such as an `auth.json` you write yourself.
 
 ---
 
