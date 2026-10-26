@@ -32,7 +32,17 @@ while args:
         overrides[name] = value
 
 action = yaml.safe_load(open("action.yml"))
-inputs = {name: str(spec.get("default", "")) for name, spec in action["inputs"].items()}
+
+
+def as_input(value):
+    """The string GitHub passes for an input default: YAML true and false
+    become "true" and "false", not Python's "True" and "False"."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+inputs = {name: as_input(spec.get("default", "")) for name, spec in action["inputs"].items()}
 unknown = sorted(set(overrides) - set(inputs))
 if unknown:
     sys.exit(f"not an input of action.yml: {', '.join(unknown)}")

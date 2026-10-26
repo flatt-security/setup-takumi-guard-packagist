@@ -166,7 +166,7 @@ jobs:
           nohup python3 .github/test/standin.py >/dev/null 2>&1 &
           for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null 2>&1 && break; sleep 0.5; done
 
-      # The env: of each step comes from action.yml (step_env.py), so the test
+      # The env: of each step comes from action.yml, so the test
       # follows the inputs and defaults the action ships. Only the inputs that
       # point the action at the stand-in are given here; set-repository is
       # false so the auth script runs without Composer.
