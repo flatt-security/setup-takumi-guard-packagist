@@ -166,18 +166,14 @@ jobs:
           nohup python3 .github/test/standin.py >/dev/null 2>&1 &
           for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null 2>&1 && break; sleep 0.5; done
 
-      # set-repository is false so the auth script runs without Composer.
+      # The env: of each step comes from action.yml (step_env.py), so the test
+      # follows the inputs and defaults the action ships. Only the inputs that
+      # point the action at the stand-in are given here; set-repository is
+      # false so the auth script runs without Composer.
       - name: The auth step and Set outputs mask the token
         env:
           ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:18080/oidc
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: unused
-          BOT_ID: standin-bot
-          STS_URL: http://127.0.0.1:18080
-          AUDIENCE_INPUT: ''
-          REGISTRY_URL: https://packagist.flatt.tech
-          EXPIRES_IN: '1800'
-          SET_REPOSITORY: 'false'
-          FAIL_CLOSED: 'false'
         run: |
           python3 - <<'EOF'
           import yaml
@@ -187,12 +183,17 @@ jobs:
                   open(out, 'w').write(s['run'])
           EOF
           : > "$RUNNER_TEMP/auth.out"; : > "$RUNNER_TEMP/set.out"
-          GITHUB_ENV="$RUNNER_TEMP/env" GITHUB_OUTPUT="$RUNNER_TEMP/auth.out" bash --noprofile --norc -e -o pipefail authenticate.sh > auth.log 2>&1 || { cat auth.log; exit 1; }
+          python3 .github/test/step_env.py auth bot-id=standin-bot sts-url=http://127.0.0.1:18080 set-repository=false > auth.env
+          ( . ./auth.env && GITHUB_ENV="$RUNNER_TEMP/env" GITHUB_OUTPUT="$RUNNER_TEMP/auth.out" bash --noprofile --norc -e -o pipefail authenticate.sh ) > auth.log 2>&1 || { cat auth.log; exit 1; }
           grep -qx 'token=standin-guard-token' "$RUNNER_TEMP/auth.out" || { echo "::error::the auth step did not write the token output"; exit 1; }
           grep -qx '::add-mask::standin-guard-token' auth.log || { echo "::error::the auth step did not mask the token"; exit 1; }
-          ACCESS_TOKEN=standin-guard-token EXPIRES_AT=2026-01-01T00:00:00Z GITHUB_OUTPUT="$RUNNER_TEMP/set.out" bash --noprofile --norc -e -o pipefail set-outputs.sh > set.log 2>&1 || { cat set.log; exit 1; }
+          # Set outputs reads what the auth step wrote to $GITHUB_OUTPUT.
+          python3 .github/test/step_env.py set-outputs --outputs auth="$RUNNER_TEMP/auth.out" > set.env
+          ( . ./set.env && GITHUB_OUTPUT="$RUNNER_TEMP/set.out" bash --noprofile --norc -e -o pipefail set-outputs.sh ) > set.log 2>&1 || { cat set.log; exit 1; }
           grep -qx '::add-mask::standin-guard-token' set.log || { echo "::error::Set outputs did not mask the token"; exit 1; }
           grep -qx 'token=standin-guard-token' "$RUNNER_TEMP/set.out" || { echo "::error::Set outputs did not set the token output"; exit 1; }
+          # Without auth step outputs, as when the auth step did not get a token.
           : > "$RUNNER_TEMP/set.out"
-          ACCESS_TOKEN= EXPIRES_AT= GITHUB_OUTPUT="$RUNNER_TEMP/set.out" bash --noprofile --norc -e -o pipefail set-outputs.sh > set.log 2>&1 || { cat set.log; exit 1; }
+          python3 .github/test/step_env.py set-outputs > set.env
+          ( . ./set.env && GITHUB_OUTPUT="$RUNNER_TEMP/set.out" bash --noprofile --norc -e -o pipefail set-outputs.sh ) > set.log 2>&1 || { cat set.log; exit 1; }
           [ ! -s "$RUNNER_TEMP/set.out" ] && [ ! -s set.log ] || { echo "::error::Set outputs wrote something without a token"; exit 1; }
