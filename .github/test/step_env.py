@@ -36,7 +36,10 @@ action = yaml.safe_load(open("action.yml"))
 
 def as_input(value):
     """The string GitHub passes for an input default: YAML true and false
-    become "true" and "false", not Python's "True" and "False"."""
+    become "true" and "false", not Python's "True" and "False", and a default
+    with no value becomes the empty string, not "None"."""
+    if value is None:
+        return ""
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
