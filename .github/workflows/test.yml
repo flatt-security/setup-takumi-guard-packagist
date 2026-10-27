@@ -66,6 +66,8 @@ jobs:
           composer config --global --list | grep -q "$TEST_REGISTRY_HOST" \
             || (echo "::error::$TEST_REGISTRY_HOST not found in global composer config"; exit 1)
           echo "Global Composer repository points to $TEST_REGISTRY_HOST"
+          [ "$(composer config --global policy.ignore-unreachable)" = false ] \
+            || (echo "::error::fail-closed is the default, but policy.ignore-unreachable is not false"; exit 1)
 
       - name: Fetch a real package through the proxy
         run: |
@@ -75,6 +77,41 @@ jobs:
           grep -q "$TEST_REGISTRY_HOST" require.log \
             || (echo "::error::composer require did not route through $TEST_REGISTRY_HOST"; exit 1)
           echo "OK: package fetched through the production proxy"
+
+  fail-closed-old-composer:
+    name: with Composer older than 2.10 the step fails, whatever fail-closed is
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP and Composer 2.9
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:2.9.8
+
+      - name: Composer is 2.9
+        run: |
+          composer --version --no-ansi | grep -q '^Composer version 2\.9\.' || { echo "::error::Composer is not 2.9: $(composer --version --no-ansi)"; exit 1; }
+
+      - uses: ./
+        id: default
+        continue-on-error: true
+
+      - uses: ./
+        id: opt-out
+        continue-on-error: true
+        with:
+          fail-closed: false
+
+      - name: Both fail
+        env:
+          DEFAULT: ${{ steps.default.outcome }}
+          OPT_OUT: ${{ steps.opt-out.outcome }}
+        run: |
+          [ "$DEFAULT" = failure ] || { echo "::error::with the default inputs the action ended with '${DEFAULT}' on Composer 2.9"; exit 1; }
+          [ "$OPT_OUT" = failure ] || { echo "::error::with fail-closed false the action ended with '${OPT_OUT}' on Composer 2.9"; exit 1; }
+          ! grep -q 'ignore-unreachable' "$(composer config --global home)/config.json" || { echo "::error::policy.ignore-unreachable was written for Composer 2.9"; exit 1; }
 
   token-output:
     name: the token output holds the token (set-repository ${{ matrix.set-repository }})
@@ -117,6 +154,7 @@ jobs:
           [ "$TOKEN" = standin-guard-token ] || { echo "::error::the token output does not hold the token"; exit 1; }
           [ "$(printf '%s' "$COMPOSER_AUTH" | jq -r '."http-basic"."packagist.flatt.tech".password')" = "$TOKEN" ] || { echo "::error::the token output differs from the token in COMPOSER_AUTH"; exit 1; }
           [ -n "$EXPIRES_AT" ] || { echo "::error::token-expires-at was not set"; exit 1; }
+          [ "$(composer config --global policy.ignore-unreachable)" = false ] || { echo "::error::fail-closed is the default, but policy.ignore-unreachable is not false"; exit 1; }
 
   auth-failure:
     name: a rejected exchange fails the step and sets no token output
@@ -168,8 +206,8 @@ jobs:
 
       # The env: of each step comes from action.yml, so the test
       # follows the inputs and defaults the action ships. Only the inputs that
-      # point the action at the stand-in are given here; set-repository is
-      # false so the auth script runs without Composer.
+      # point the action at the stand-in are given here; set-repository and
+      # fail-closed are false so the auth script runs without Composer.
       - name: The auth step and Set outputs mask the token
         env:
           ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:18080/oidc
@@ -183,7 +221,7 @@ jobs:
                   open(out, 'w').write(s['run'])
           EOF
           : > "$RUNNER_TEMP/auth.out"; : > "$RUNNER_TEMP/set.out"
-          python3 .github/test/step_env.py auth bot-id=standin-bot sts-url=http://127.0.0.1:18080 set-repository=false > auth.env
+          python3 .github/test/step_env.py auth bot-id=standin-bot sts-url=http://127.0.0.1:18080 set-repository=false fail-closed=false > auth.env
           ( . ./auth.env && GITHUB_ENV="$RUNNER_TEMP/env" GITHUB_OUTPUT="$RUNNER_TEMP/auth.out" bash --noprofile --norc -e -o pipefail authenticate.sh ) > auth.log 2>&1 || { cat auth.log; exit 1; }
           grep -qx 'token=standin-guard-token' "$RUNNER_TEMP/auth.out" || { echo "::error::the auth step did not write the token output"; exit 1; }
           grep -qx '::add-mask::standin-guard-token' auth.log || { echo "::error::the auth step did not mask the token"; exit 1; }

@@ -38,7 +38,7 @@ Every `composer install` in your CI is a trust decision. Takumi Guard sits betwe
 
 - **How it works** -- Routes package metadata through a security proxy (`packagist.flatt.tech`) that checks packages against a threat database in real time.
 - **What you change** -- One step in your workflow YAML. No `composer.json` edits, no secrets to manage.
-- **What it supports** -- **Composer 2.x**. Speaks the Composer repository protocol.
+- **What it supports** -- **Composer 2.10 or later**. Speaks the Composer repository protocol.
 
 ---
 
@@ -167,7 +167,7 @@ steps:
 
 ## Adopting Takumi Guard
 
-**Blocking works immediately — no lockfile changes needed.** The action configures a global Composer `composer`-type repository at `packagist.flatt.tech` and disables `packagist.org`. On **Composer 2.10+**, the proxy's dependency-policy filter blocks malicious packages during `composer install` and `composer update`, **including installs from an existing, unmodified `composer.lock`**. Older Composer versions block during `composer update` / `composer require` only.
+**Blocking works immediately — no lockfile changes needed.** The action configures a global Composer `composer`-type repository at `packagist.flatt.tech` and disables `packagist.org`. On **Composer 2.10+**, the proxy's dependency-policy filter blocks malicious packages during `composer install` and `composer update`, **including installs from an existing, unmodified `composer.lock`**. Older Composer versions do not check an existing `composer.lock` against the blocklist, so the action fails the step on Composer older than 2.10.
 
 **For projects with private packages:** Private Composer repositories (e.g. `satis`, Private Packagist, VCS sources) declared in `composer.json` under `repositories` are unaffected — they resolve directly. The action only redirects the default `packagist.org` source.
 
@@ -185,7 +185,7 @@ steps:
 |---|---|---|---|
 | `bot-id` | No | -- | Bot ID from Shisho Cloud byGMO. Omit for blocking-only mode. |
 | `set-repository` | No | `true` | Configure the global Composer repository and disable packagist.org. Set to `false` if you manage repositories yourself. |
-| `fail-closed` | No | `false` | Set `policy.ignore-unreachable=false` so `composer install`/`update` **fail** if the Guard proxy is unreachable, instead of proceeding unblocked. Recommended for CI that must never install while the proxy is down. Composer 2.10+. |
+| `fail-closed` | No | `true` | Set `policy.ignore-unreachable=false` so `composer install`/`update` **fail** if the Guard proxy is unreachable or the token is no longer valid (for example, after it expires). With `false`, Composer then downloads the packages in `composer.lock` from the source recorded there, such as GitHub, without going through Takumi Guard, so **blocked packages are installed**. |
 | `registry-url` | No | `https://packagist.flatt.tech` | Registry endpoint (must speak the Composer repository protocol). |
 | `sts-url` | No | `https://sts.cloud.shisho.dev` | STS endpoint for token exchange. |
 | `expires-in` | No | `1800` | Token lifetime in seconds (max 86400). |
