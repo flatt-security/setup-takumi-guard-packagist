@@ -65,16 +65,6 @@ runs:
         REGISTRY_HOST=$(echo "$REGISTRY_URL_NORMALIZED" | sed 's|^https://||')
 
         write_repository() {
-          # Composer before 2.10 does not check composer.lock against the
-          # blocklist, so composer install from a lock file never goes through
-          # Takumi Guard's blocking. Require 2.10 instead of leaving those
-          # installs unprotected. A runner without Composer is left alone.
-          COMPOSER_MINOR=$({ composer --version --no-ansi 2>/dev/null || true; } \
-            | sed -n 's/^Composer version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p' | head -n 1)
-          if [ -n "$COMPOSER_MINOR" ] && { [ "${COMPOSER_MINOR% *}" -lt 2 ] || { [ "${COMPOSER_MINOR% *}" -eq 2 ] && [ "${COMPOSER_MINOR#* }" -lt 10 ]; }; }; then
-            fail_with "Composer ${COMPOSER_MINOR% *}.${COMPOSER_MINOR#* } does not check composer.lock against the Takumi Guard blocklist, so composer install from a lock file is not protected. This action requires Composer 2.10 or later."
-          fi
-
           if [ "$SET_REPOSITORY" != "false" ]; then
             # Configure a global Composer repository pointing at the Guard proxy.
             # Using composer config --global writes to ~/.composer/config.json,
@@ -104,6 +94,26 @@ runs:
           echo "::error::$1"
           exit 1
         }
+
+        # Composer before 2.10 does not check composer.lock against the
+        # blocklist, so composer install from a lock file never goes through
+        # Takumi Guard's blocking: require 2.10. Checked before anything is
+        # configured or a token is issued, so a failure leaves nothing behind.
+        # Without Composer on the runner, the step can neither configure the
+        # repository nor fail closed, so it fails unless both are turned off.
+        if command -v composer >/dev/null 2>&1; then
+          COMPOSER_VERSION_LINE=$(composer --version --no-ansi 2>/dev/null | grep -m 1 '^Composer version' || true)
+          COMPOSER_MAJOR=$(printf '%s' "$COMPOSER_VERSION_LINE" | sed -n 's/^Composer version \([0-9][0-9]*\)\..*/\1/p')
+          COMPOSER_MINOR=$(printf '%s' "$COMPOSER_VERSION_LINE" | sed -n 's/^Composer version [0-9][0-9]*\.\([0-9][0-9]*\).*/\1/p')
+          if [ -z "$COMPOSER_MAJOR" ] || [ -z "$COMPOSER_MINOR" ]; then
+            fail_with "Could not read the Composer version from 'composer --version'. This action requires Composer 2.10 or later."
+          fi
+          if [ "$COMPOSER_MAJOR" -lt 2 ] || { [ "$COMPOSER_MAJOR" -eq 2 ] && [ "$COMPOSER_MINOR" -lt 10 ]; }; then
+            fail_with "Composer ${COMPOSER_MAJOR}.${COMPOSER_MINOR} does not check composer.lock against the Takumi Guard blocklist, so composer install from a lock file is not protected. This action requires Composer 2.10 or later."
+          fi
+        elif [ "$SET_REPOSITORY" != "false" ] || [ "$FAIL_CLOSED" = "true" ]; then
+          fail_with "Composer was not found. set-repository and fail-closed configure Composer, so install Composer 2.10 or later before this action."
+        fi
 
         # Always clean up curl response bodies, even on early-exit paths.
         # `rm -f ""` is a silent no-op so this is safe before assignment.

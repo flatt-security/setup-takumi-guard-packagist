@@ -112,6 +112,98 @@ jobs:
           [ "$DEFAULT" = failure ] || { echo "::error::with the default inputs the action ended with '${DEFAULT}' on Composer 2.9"; exit 1; }
           [ "$OPT_OUT" = failure ] || { echo "::error::with fail-closed false the action ended with '${OPT_OUT}' on Composer 2.9"; exit 1; }
           ! grep -q 'ignore-unreachable' "$(composer config --global home)/config.json" || { echo "::error::policy.ignore-unreachable was written for Composer 2.9"; exit 1; }
+          # The version is checked before anything is configured.
+          ! grep -q "$TEST_REGISTRY_HOST" "$(composer config --global home)/config.json" || { echo "::error::the repository was configured before the step failed"; exit 1; }
+
+  old-composer-bot:
+    name: with Composer older than 2.10 the step fails before a token is issued
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP and Composer 2.9
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:2.9.8
+
+      - name: Stand-in OIDC and STS endpoints
+        run: |
+          nohup python3 .github/test/standin.py >/dev/null 2>&1 &
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null 2>&1 && break; sleep 0.5; done
+
+      - uses: ./
+        id: guard
+        continue-on-error: true
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:18080/oidc
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: unused
+        with:
+          bot-id: standin-bot
+          sts-url: http://127.0.0.1:18080
+
+      - name: The step failed and left no token behind
+        env:
+          OUTCOME: ${{ steps.guard.outcome }}
+          TOKEN: ${{ steps.guard.outputs.token }}
+        run: |
+          [ "$OUTCOME" = failure ] || { echo "::error::the action ended with '${OUTCOME}' on Composer 2.9"; exit 1; }
+          [ -z "$TOKEN" ] || { echo "::error::the token output was set"; exit 1; }
+          [ -z "${COMPOSER_AUTH:-}" ] || { echo "::error::COMPOSER_AUTH was set"; exit 1; }
+
+  no-composer:
+    name: without Composer the step fails unless set-repository and fail-closed are off
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove Composer from the runner
+        run: |
+          while command -v composer >/dev/null 2>&1; do sudo rm -f "$(command -v composer)"; done
+
+      - name: Stand-in OIDC and STS endpoints
+        run: |
+          nohup python3 .github/test/standin.py >/dev/null 2>&1 &
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null 2>&1 && break; sleep 0.5; done
+
+      - uses: ./
+        id: default
+        continue-on-error: true
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:18080/oidc
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: unused
+        with:
+          bot-id: standin-bot
+          sts-url: http://127.0.0.1:18080
+          set-repository: false
+
+      - uses: ./
+        id: both-off
+        continue-on-error: true
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:18080/oidc
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: unused
+        with:
+          bot-id: standin-bot
+          sts-url: http://127.0.0.1:18080
+          set-repository: false
+          fail-closed: false
+
+      - name: The default fails, and both off delivers the token
+        env:
+          DEFAULT: ${{ steps.default.outcome }}
+          DEFAULT_TOKEN: ${{ steps.default.outputs.token }}
+          BOTH_OFF: ${{ steps.both-off.outcome }}
+          BOTH_OFF_TOKEN: ${{ steps.both-off.outputs.token }}
+        run: |
+          [ "$DEFAULT" = failure ] || { echo "::error::with fail-closed on and no Composer the action ended with '${DEFAULT}'"; exit 1; }
+          [ -z "$DEFAULT_TOKEN" ] || { echo "::error::a token was issued although the step failed"; exit 1; }
+          [ "$BOTH_OFF" = success ] || { echo "::error::with set-repository and fail-closed off the action ended with '${BOTH_OFF}'"; exit 1; }
+          [ "$BOTH_OFF_TOKEN" = standin-guard-token ] || { echo "::error::the token output was not set"; exit 1; }
 
   token-output:
     name: the token output holds the token (set-repository ${{ matrix.set-repository }})
