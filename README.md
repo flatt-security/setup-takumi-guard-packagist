@@ -162,6 +162,7 @@ steps:
   }
   ```
 - If authentication fails, **the action exits with an error** -- there is no fallback.
+- `fail-closed` still configures Composer, so install Composer before the action. If Composer is installed only in a later step, also set `fail-closed: false`.
 
 ---
 
@@ -246,7 +247,7 @@ The `token` output holds the bare token, for a tool that needs it in a form othe
 | `STS returned non-JSON (HTTP N)` | An error response from STS or an upstream layer was not valid JSON (e.g. an HTML error page from a transient outage) | Usually a transient infrastructure issue. The HTTP status and a body snippet are echoed to the log to help diagnose. |
 | `STS returned HTTP N without an access_token` | STS rejected the auth request | The job log includes STS's own message inside this error. Common cases: `invalid ID token` -- trust condition mismatch, check the bot's trust settings in Shisho Cloud byGMO (if the trust condition sets an audience, it must equal the value the action sends -- by default the STS URL, overridable via the `audience` input); `invalid request` -- malformed bot-id, double-check the value from your console. |
 | `GitHub OIDC token fetch failed` | Could not reach `token.actions.githubusercontent.com` or got a non-200 response | Usually transient; the action retries up to 3 times. Persistent failures point at a GitHub Actions issue. |
-| `composer: command not found` | PHP/Composer not installed before this action | Add `shivammathur/setup-php@v2` before `setup-takumi-guard-packagist` |
+| `Composer was not found. set-repository and fail-closed configure Composer, ...` | PHP/Composer not installed before this action | Add `shivammathur/setup-php@v2` before `setup-takumi-guard-packagist` |
 | `... was flagged as malware` / resolution fails for a specific package | The package (or the locked version) is on the blocklist — this is the proxy working | Use a non-blocked version. To inspect, run `composer audit --locked`. |
 | `Package X not found` after enabling | A private package is resolving through the proxy instead of its own repository | Declare the private package as its own `vcs`/`path`/`satis` repository in `composer.json` (see Adopting Takumi Guard) |
 | Build silently fetches from packagist.org | `set-repository: false` without configuring the repository in `composer.json` | Either remove `set-repository: false` or add the `repositories` block to `composer.json` yourself |

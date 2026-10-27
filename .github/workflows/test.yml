@@ -181,6 +181,11 @@ jobs:
           sts-url: http://127.0.0.1:18080
           set-repository: false
 
+      # Checked before both-off runs, since both-off writes COMPOSER_AUTH.
+      - name: The default left no COMPOSER_AUTH behind
+        run: |
+          [ -z "${COMPOSER_AUTH:-}" ] || { echo "::error::COMPOSER_AUTH was set although the step failed"; exit 1; }
+
       - uses: ./
         id: both-off
         continue-on-error: true
