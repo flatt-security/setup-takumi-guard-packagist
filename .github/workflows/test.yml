@@ -48,14 +48,18 @@ jobs:
           tools: composer:v2
 
       - uses: ./
+        id: guard
 
-      - name: Verify COMPOSER_AUTH is not set in anonymous mode
+      - name: Verify COMPOSER_AUTH and the token output are not set in anonymous mode
+        env:
+          TOKEN: ${{ steps.guard.outputs.token }}
         run: |
           if [ -n "${COMPOSER_AUTH:-}" ]; then
             echo "::error::anonymous mode must not set COMPOSER_AUTH"
             exit 1
           fi
-          echo "OK: COMPOSER_AUTH not set in anonymous mode"
+          [ -z "$TOKEN" ] || { echo "::error::the token output was set without bot-id"; exit 1; }
+          echo "OK: COMPOSER_AUTH and the token output not set in anonymous mode"
 
       - name: Verify global Composer repository is configured
         run: |
@@ -71,3 +75,125 @@ jobs:
           grep -q "$TEST_REGISTRY_HOST" require.log \
             || (echo "::error::composer require did not route through $TEST_REGISTRY_HOST"; exit 1)
           echo "OK: package fetched through the production proxy"
+
+  token-output:
+    name: the token output holds the token (set-repository ${{ matrix.set-repository }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        set-repository: ['true', 'false']
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+
+      - name: Stand-in OIDC and STS endpoints
+        run: |
+          nohup python3 .github/test/standin.py >/dev/null 2>&1 &
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null 2>&1 && break; sleep 0.5; done
+
+      - uses: ./
+        id: guard
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:18080/oidc
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: unused
+        with:
+          bot-id: standin-bot
+          sts-url: http://127.0.0.1:18080
+          set-repository: ${{ matrix.set-repository }}
+
+      - name: The output equals the token in COMPOSER_AUTH
+        env:
+          TOKEN: ${{ steps.guard.outputs.token }}
+          EXPIRES_AT: ${{ steps.guard.outputs.token-expires-at }}
+        run: |
+          [ "$TOKEN" = standin-guard-token ] || { echo "::error::the token output does not hold the token"; exit 1; }
+          [ "$(printf '%s' "$COMPOSER_AUTH" | jq -r '."http-basic"."packagist.flatt.tech".password')" = "$TOKEN" ] || { echo "::error::the token output differs from the token in COMPOSER_AUTH"; exit 1; }
+          [ -n "$EXPIRES_AT" ] || { echo "::error::token-expires-at was not set"; exit 1; }
+
+  auth-failure:
+    name: a rejected exchange fails the step and sets no token output
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stand-in OIDC and STS endpoints
+        run: |
+          nohup python3 .github/test/standin.py >/dev/null 2>&1 &
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null 2>&1 && break; sleep 0.5; done
+
+      - uses: ./
+        id: guard
+        continue-on-error: true
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:18080/oidc
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: unused
+        with:
+          bot-id: standin-bot
+          sts-url: http://127.0.0.1:18080/reject
+
+      - name: The action failed and set no token output
+        env:
+          OUTCOME: ${{ steps.guard.outcome }}
+          TOKEN: ${{ steps.guard.outputs.token }}
+        run: |
+          [ "$OUTCOME" = "failure" ] || { echo "::error::the action ended with '${OUTCOME}' although the exchange was rejected"; exit 1; }
+          [ -z "$TOKEN" ] || { echo "::error::the token output was set although authentication failed"; exit 1; }
+          [ -z "${COMPOSER_AUTH:-}" ] || { echo "::error::COMPOSER_AUTH was set although authentication failed"; exit 1; }
+
+  # The runner prints the env: of the Set outputs step in the log before the
+  # step runs, so the auth step must mask the token by then. Set outputs masks
+  # it again, as the other setup-takumi-guard actions do.
+  token-output-mask:
+    name: both steps that handle the token mask it
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stand-in OIDC and STS endpoints
+        run: |
+          nohup python3 .github/test/standin.py >/dev/null 2>&1 &
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null 2>&1 && break; sleep 0.5; done
+
+      # The env: of each step comes from action.yml, so the test
+      # follows the inputs and defaults the action ships. Only the inputs that
+      # point the action at the stand-in are given here; set-repository is
+      # false so the auth script runs without Composer.
+      - name: The auth step and Set outputs mask the token
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:18080/oidc
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: unused
+        run: |
+          python3 - <<'EOF'
+          import yaml
+          for s in yaml.safe_load(open('action.yml'))['runs']['steps']:
+              out = {'auth': 'authenticate.sh', 'set-outputs': 'set-outputs.sh'}.get(s.get('id'))
+              if out:
+                  open(out, 'w').write(s['run'])
+          EOF
+          : > "$RUNNER_TEMP/auth.out"; : > "$RUNNER_TEMP/set.out"
+          python3 .github/test/step_env.py auth bot-id=standin-bot sts-url=http://127.0.0.1:18080 set-repository=false > auth.env
+          ( . ./auth.env && GITHUB_ENV="$RUNNER_TEMP/env" GITHUB_OUTPUT="$RUNNER_TEMP/auth.out" bash --noprofile --norc -e -o pipefail authenticate.sh ) > auth.log 2>&1 || { cat auth.log; exit 1; }
+          grep -qx 'token=standin-guard-token' "$RUNNER_TEMP/auth.out" || { echo "::error::the auth step did not write the token output"; exit 1; }
+          grep -qx '::add-mask::standin-guard-token' auth.log || { echo "::error::the auth step did not mask the token"; exit 1; }
+          # Set outputs reads what the auth step wrote to $GITHUB_OUTPUT.
+          python3 .github/test/step_env.py set-outputs --outputs auth="$RUNNER_TEMP/auth.out" > set.env
+          ( . ./set.env && GITHUB_OUTPUT="$RUNNER_TEMP/set.out" bash --noprofile --norc -e -o pipefail set-outputs.sh ) > set.log 2>&1 || { cat set.log; exit 1; }
+          grep -qx '::add-mask::standin-guard-token' set.log || { echo "::error::Set outputs did not mask the token"; exit 1; }
+          grep -qx 'token=standin-guard-token' "$RUNNER_TEMP/set.out" || { echo "::error::Set outputs did not set the token output"; exit 1; }
+          # Without auth step outputs, as when the auth step did not get a token.
+          : > "$RUNNER_TEMP/set.out"
+          python3 .github/test/step_env.py set-outputs > set.env
+          ( . ./set.env && GITHUB_OUTPUT="$RUNNER_TEMP/set.out" bash --noprofile --norc -e -o pipefail set-outputs.sh ) > set.log 2>&1 || { cat set.log; exit 1; }
+          [ ! -s "$RUNNER_TEMP/set.out" ] && [ ! -s set.log ] || { echo "::error::Set outputs wrote something without a token"; exit 1; }
