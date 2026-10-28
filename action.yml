@@ -32,9 +32,9 @@ inputs:
     required: false
     default: 'true'
   fail-closed:
-    description: 'When true, set policy.ignore-unreachable=false so composer install/update FAIL if the Guard proxy is unreachable (instead of proceeding unblocked). Recommended for CI that must never install while the proxy is down. Requires Composer 2.10+.'
+    description: 'When true, set policy.ignore-unreachable=false so composer install/update FAIL if the Guard proxy is unreachable or the token is no longer valid. When false, Composer then downloads the packages in composer.lock from the source recorded there, such as GitHub, without going through Takumi Guard, so blocked packages are installed.'
     required: false
-    default: 'false'
+    default: 'true'
 
 outputs:
   token:
@@ -78,10 +78,10 @@ runs:
           fi
 
           if [ "$FAIL_CLOSED" = "true" ]; then
-            # Make composer install/update FAIL when the proxy is unreachable,
-            # instead of the default (warn + proceed unblocked). Composer 2.10+
-            # only; older clients ignore this key. The proxy's dependency-policy
-            # blocking is what enforces the blocklist on locked installs.
+            # Make composer install/update FAIL when the blocklist check does not
+            # answer, instead of Composer's default (warn and install from the
+            # lock without the blocklist). An expired or revoked token gets a 401
+            # there, which Composer counts as unreachable too.
             composer config --global policy.ignore-unreachable false
             echo "::notice::fail-closed enabled (policy.ignore-unreachable=false)"
           fi
@@ -94,6 +94,26 @@ runs:
           echo "::error::$1"
           exit 1
         }
+
+        # Composer before 2.10 does not check composer.lock against the
+        # blocklist, so composer install from a lock file never goes through
+        # Takumi Guard's blocking: require 2.10. Checked before anything is
+        # configured or a token is issued, so a failure leaves nothing behind.
+        # Without Composer on the runner, the step can neither configure the
+        # repository nor fail closed, so it fails unless both are turned off.
+        if command -v composer >/dev/null 2>&1; then
+          COMPOSER_VERSION_LINE=$(composer --version --no-ansi 2>/dev/null | grep -m 1 '^Composer version' || true)
+          COMPOSER_MAJOR=$(printf '%s' "$COMPOSER_VERSION_LINE" | sed -n 's/^Composer version \([0-9][0-9]*\)\..*/\1/p')
+          COMPOSER_MINOR=$(printf '%s' "$COMPOSER_VERSION_LINE" | sed -n 's/^Composer version [0-9][0-9]*\.\([0-9][0-9]*\).*/\1/p')
+          if [ -z "$COMPOSER_MAJOR" ] || [ -z "$COMPOSER_MINOR" ]; then
+            fail_with "Could not read the Composer version from 'composer --version'. This action requires Composer 2.10 or later."
+          fi
+          if [ "$COMPOSER_MAJOR" -lt 2 ] || { [ "$COMPOSER_MAJOR" -eq 2 ] && [ "$COMPOSER_MINOR" -lt 10 ]; }; then
+            fail_with "Composer ${COMPOSER_MAJOR}.${COMPOSER_MINOR} does not check composer.lock against the Takumi Guard blocklist, so composer install from a lock file is not protected. This action requires Composer 2.10 or later."
+          fi
+        elif [ "$SET_REPOSITORY" != "false" ] || [ "$FAIL_CLOSED" = "true" ]; then
+          fail_with "Composer was not found. set-repository and fail-closed configure Composer, so install Composer 2.10 or later before this action."
+        fi
 
         # Always clean up curl response bodies, even on early-exit paths.
         # `rm -f ""` is a silent no-op so this is safe before assignment.

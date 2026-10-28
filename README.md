@@ -38,7 +38,7 @@ Every `composer install` in your CI is a trust decision. Takumi Guard sits betwe
 
 - **How it works** -- Routes package metadata through a security proxy (`packagist.flatt.tech`) that checks packages against a threat database in real time.
 - **What you change** -- One step in your workflow YAML. No `composer.json` edits, no secrets to manage.
-- **What it supports** -- **Composer 2.x**. Speaks the Composer repository protocol.
+- **What it supports** -- **Composer 2.10 or later**. Speaks the Composer repository protocol.
 
 ---
 
@@ -162,12 +162,13 @@ steps:
   }
   ```
 - If authentication fails, **the action exits with an error** -- there is no fallback.
+- `fail-closed` still configures Composer, so install Composer before the action. If Composer is installed only in a later step, also set `fail-closed: false`.
 
 ---
 
 ## Adopting Takumi Guard
 
-**Blocking works immediately — no lockfile changes needed.** The action configures a global Composer `composer`-type repository at `packagist.flatt.tech` and disables `packagist.org`. On **Composer 2.10+**, the proxy's dependency-policy filter blocks malicious packages during `composer install` and `composer update`, **including installs from an existing, unmodified `composer.lock`**. Older Composer versions block during `composer update` / `composer require` only.
+**Blocking works immediately — no lockfile changes needed.** The action configures a global Composer `composer`-type repository at `packagist.flatt.tech` and disables `packagist.org`. On **Composer 2.10+**, the proxy's dependency-policy filter blocks malicious packages during `composer install` and `composer update`, **including installs from an existing, unmodified `composer.lock`**. Older Composer versions do not check an existing `composer.lock` against the blocklist, so the action fails the step on Composer older than 2.10.
 
 **For projects with private packages:** Private Composer repositories (e.g. `satis`, Private Packagist, VCS sources) declared in `composer.json` under `repositories` are unaffected — they resolve directly. The action only redirects the default `packagist.org` source.
 
@@ -185,7 +186,7 @@ steps:
 |---|---|---|---|
 | `bot-id` | No | -- | Bot ID from Shisho Cloud byGMO. Omit for blocking-only mode. |
 | `set-repository` | No | `true` | Configure the global Composer repository and disable packagist.org. Set to `false` if you manage repositories yourself. |
-| `fail-closed` | No | `false` | Set `policy.ignore-unreachable=false` so `composer install`/`update` **fail** if the Guard proxy is unreachable, instead of proceeding unblocked. Recommended for CI that must never install while the proxy is down. Composer 2.10+. |
+| `fail-closed` | No | `true` | Set `policy.ignore-unreachable=false` so `composer install`/`update` **fail** if the Guard proxy is unreachable or the token is no longer valid (for example, after it expires). With `false`, Composer then downloads the packages in `composer.lock` from the source recorded there, such as GitHub, without going through Takumi Guard, so **blocked packages are installed**. |
 | `registry-url` | No | `https://packagist.flatt.tech` | Registry endpoint (must speak the Composer repository protocol). |
 | `sts-url` | No | `https://sts.cloud.shisho.dev` | STS endpoint for token exchange. |
 | `expires-in` | No | `1800` | Token lifetime in seconds (max 86400). |
@@ -246,7 +247,7 @@ The `token` output holds the bare token, for a tool that needs it in a form othe
 | `STS returned non-JSON (HTTP N)` | An error response from STS or an upstream layer was not valid JSON (e.g. an HTML error page from a transient outage) | Usually a transient infrastructure issue. The HTTP status and a body snippet are echoed to the log to help diagnose. |
 | `STS returned HTTP N without an access_token` | STS rejected the auth request | The job log includes STS's own message inside this error. Common cases: `invalid ID token` -- trust condition mismatch, check the bot's trust settings in Shisho Cloud byGMO (if the trust condition sets an audience, it must equal the value the action sends -- by default the STS URL, overridable via the `audience` input); `invalid request` -- malformed bot-id, double-check the value from your console. |
 | `GitHub OIDC token fetch failed` | Could not reach `token.actions.githubusercontent.com` or got a non-200 response | Usually transient; the action retries up to 3 times. Persistent failures point at a GitHub Actions issue. |
-| `composer: command not found` | PHP/Composer not installed before this action | Add `shivammathur/setup-php@v2` before `setup-takumi-guard-packagist` |
+| `Composer was not found. set-repository and fail-closed configure Composer, ...` | PHP/Composer not installed before this action | Add `shivammathur/setup-php@v2` before `setup-takumi-guard-packagist` |
 | `... was flagged as malware` / resolution fails for a specific package | The package (or the locked version) is on the blocklist — this is the proxy working | Use a non-blocked version. To inspect, run `composer audit --locked`. |
 | `Package X not found` after enabling | A private package is resolving through the proxy instead of its own repository | Declare the private package as its own `vcs`/`path`/`satis` repository in `composer.json` (see Adopting Takumi Guard) |
 | Build silently fetches from packagist.org | `set-repository: false` without configuring the repository in `composer.json` | Either remove `set-repository: false` or add the `repositories` block to `composer.json` yourself |
