@@ -133,7 +133,8 @@ steps:
 
 **Key details:**
 - Auth is handled via **GitHub's built-in OIDC** -- no PATs or secrets to rotate.
-- The action does a one-shot OIDC → STS exchange at job start, writes the resulting short-lived JWT to `COMPOSER_AUTH` in `$GITHUB_ENV`, and Composer Basic-auths every request to the proxy for the rest of the job.
+- The action does a one-shot OIDC → STS exchange at job start, adds the resulting short-lived JWT to `COMPOSER_AUTH` in `$GITHUB_ENV`, and Composer Basic-auths every request to the proxy for the rest of the job.
+- If `COMPOSER_AUTH` is already set, for example with credentials for a private repository, its entries are kept and the `http-basic` entry for the registry host is added or replaced. A `bearer`, `custom-headers` or `client-certificate` entry for the registry host is removed, because Composer would send it in place of the token. A `COMPOSER_AUTH` that is not a JSON object fails the step before a token is issued.
 - If authentication fails (invalid `bot-id`, missing OIDC permission, STS unreachable, transient upstream error), the action exits with a clear error message and the build fails. There is no silent fallback to blocking-only mode.
 - Get a Bot ID from [Shisho Cloud byGMO](https://cloud.shisho.dev).
 
