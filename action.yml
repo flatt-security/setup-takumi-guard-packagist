@@ -127,6 +127,19 @@ runs:
           exit 0
         fi
 
+        # The token is added to the COMPOSER_AUTH the job already has, so the
+        # credentials in it for other hosts keep applying. Checked before a
+        # token is issued: Composer rejects a COMPOSER_AUTH that is not a JSON
+        # object, so the job could not install with it either way. Read with
+        # --argjson, as the merge below reads it, so a value that passes here
+        # is one the merge accepts.
+        EXISTING_COMPOSER_AUTH="${COMPOSER_AUTH:-}"
+        if [ -z "$EXISTING_COMPOSER_AUTH" ]; then
+          EXISTING_COMPOSER_AUTH='{}'
+        elif ! jq -en --argjson v "$EXISTING_COMPOSER_AUTH" '$v | type == "object"' >/dev/null 2>&1; then
+          fail_with "COMPOSER_AUTH is already set but is not a JSON object, so the Takumi Guard credentials cannot be added to it. Fix or unset COMPOSER_AUTH before this action."
+        fi
+
         if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ] || [ -z "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
           fail_with "OIDC not available. Add 'permissions: { id-token: write }' to your job."
         fi
@@ -226,10 +239,18 @@ runs:
         # the `KEY=value` write to $GITHUB_ENV below — the runner parses line 2
         # onward as separate (invalid) env entries. Compact JSON is single-line
         # and equally valid for Composer's COMPOSER_AUTH.
+        # The entry is merged into the COMPOSER_AUTH read above: every other
+        # entry is kept, and an entry for the registry host is replaced.
+        # Composer applies bearer, custom-headers and client-certificate after
+        # http-basic, so an entry of those types for the registry host would
+        # replace the token; those are removed. The ? leaves a value that is
+        # not an object to Composer instead of failing after the exchange.
         COMPOSER_AUTH_VALUE=$(jq -cn \
+          --argjson existing "$EXISTING_COMPOSER_AUTH" \
           --arg host "$REGISTRY_HOST" \
           --arg pass "$ACCESS_TOKEN" \
-          '{"http-basic": {($host): {"username": "_", "password": $pass}}}')
+          '($existing | del(.bearer[$host]?, ."custom-headers"[$host]?, ."client-certificate"[$host]?))
+            * {"http-basic": {($host): {"username": "_", "password": $pass}}}')
         echo "::add-mask::${COMPOSER_AUTH_VALUE}"
         echo "COMPOSER_AUTH=${COMPOSER_AUTH_VALUE}" >> "$GITHUB_ENV"
 

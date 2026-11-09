@@ -253,6 +253,109 @@ jobs:
           [ -n "$EXPIRES_AT" ] || { echo "::error::token-expires-at was not set"; exit 1; }
           [ "$(composer config --global policy.ignore-unreachable)" = false ] || { echo "::error::fail-closed is the default, but policy.ignore-unreachable is not false"; exit 1; }
 
+  existing-composer-auth:
+    name: COMPOSER_AUTH set ${{ matrix.source }} keeps its entries
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [in the job env, by an earlier step]
+    permissions:
+      contents: read
+    env:
+      PRIVATE_AUTH: '{"http-basic":{"repo.example.com":{"username":"u","password":"private-pass"},"packagist.flatt.tech":{"username":"_","password":"stale-token"}},"github-oauth":{"github.com":"gho_example"},"bearer":{"packagist.flatt.tech":"stale-bearer","other.example":"other-bearer"},"custom-headers":{"packagist.flatt.tech":["X-Stale:1"]},"client-certificate":{"packagist.flatt.tech":{"local_cert":"/nonexistent.pem"}}}'
+      COMPOSER_AUTH: ${{ matrix.source == 'in the job env' && '{"http-basic":{"repo.example.com":{"username":"u","password":"private-pass"},"packagist.flatt.tech":{"username":"_","password":"stale-token"}},"github-oauth":{"github.com":"gho_example"},"bearer":{"packagist.flatt.tech":"stale-bearer","other.example":"other-bearer"},"custom-headers":{"packagist.flatt.tech":["X-Stale:1"]},"client-certificate":{"packagist.flatt.tech":{"local_cert":"/nonexistent.pem"}}}' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+
+      - name: Set COMPOSER_AUTH in an earlier step
+        if: matrix.source == 'by an earlier step'
+        run: echo "COMPOSER_AUTH=${PRIVATE_AUTH}" >> "$GITHUB_ENV"
+
+      - name: Stand-in OIDC and STS endpoints
+        run: |
+          nohup python3 .github/test/standin.py >/dev/null 2>&1 &
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null 2>&1 && break; sleep 0.5; done
+
+      - uses: ./
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:18080/oidc
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: unused
+        with:
+          bot-id: standin-bot
+          sts-url: http://127.0.0.1:18080
+
+      - name: The other entries are kept and the registry entry holds the new token
+        run: |
+          [ "$(printf '%s' "$COMPOSER_AUTH" | jq -r '."http-basic"."packagist.flatt.tech".password')" = standin-guard-token ] || { echo "::error::the registry entry does not hold the new token"; exit 1; }
+          [ "$(printf '%s' "$COMPOSER_AUTH" | jq -r '."http-basic"."repo.example.com".password')" = private-pass ] || { echo "::error::the http-basic entry for another host was lost"; exit 1; }
+          [ "$(printf '%s' "$COMPOSER_AUTH" | jq -r '."github-oauth"."github.com"')" = gho_example ] || { echo "::error::the github-oauth entry was lost"; exit 1; }
+          # Composer applies bearer, custom-headers and client-certificate after
+          # http-basic, so those for the registry host must be gone; the rest
+          # stay.
+          [ "$(printf '%s' "$COMPOSER_AUTH" | jq -r '.bearer."packagist.flatt.tech" // "gone"')" = gone ] || { echo "::error::the bearer entry for the registry host was kept"; exit 1; }
+          [ "$(printf '%s' "$COMPOSER_AUTH" | jq -r '."custom-headers"."packagist.flatt.tech" // "gone"')" = gone ] || { echo "::error::the custom-headers entry for the registry host was kept"; exit 1; }
+          [ "$(printf '%s' "$COMPOSER_AUTH" | jq -r '."client-certificate"."packagist.flatt.tech" // "gone"')" = gone ] || { echo "::error::the client-certificate entry for the registry host was kept"; exit 1; }
+          [ "$(printf '%s' "$COMPOSER_AUTH" | jq -r '.bearer."other.example"')" = other-bearer ] || { echo "::error::the bearer entry for another host was lost"; exit 1; }
+          # Composer reads the merged value.
+          [ "$(composer config --global http-basic.repo.example.com.password)" = private-pass ] || { echo "::error::Composer does not see the kept entry"; exit 1; }
+
+  malformed-composer-auth:
+    name: a COMPOSER_AUTH that is not a JSON object fails the step before a token is requested
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        value: ['not json', '["array"]', '{} {}']
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # Without Composer the step does not depend on the Composer of the
+      # runner image: with set-repository and fail-closed off, the version
+      # check is skipped, so only the COMPOSER_AUTH check can fail it.
+      - name: Remove Composer from the runner
+        run: |
+          while command -v composer >/dev/null 2>&1; do sudo rm -f "$(command -v composer)"; done
+
+      - name: Stand-in OIDC and STS endpoints
+        run: |
+          : > "$RUNNER_TEMP/standin.log"
+          STANDIN_LOG="$RUNNER_TEMP/standin.log" nohup python3 .github/test/standin.py >/dev/null 2>&1 &
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null 2>&1 && break; sleep 0.5; done
+
+      - uses: ./
+        id: guard
+        continue-on-error: true
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:18080/oidc
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: unused
+          COMPOSER_AUTH: ${{ matrix.value }}
+        with:
+          bot-id: standin-bot
+          sts-url: http://127.0.0.1:18080
+          set-repository: false
+          fail-closed: false
+
+      - name: The step failed and left no token behind
+        env:
+          OUTCOME: ${{ steps.guard.outcome }}
+          TOKEN: ${{ steps.guard.outputs.token }}
+        run: |
+          [ "$OUTCOME" = failure ] || { echo "::error::the action ended with '${OUTCOME}' with a malformed COMPOSER_AUTH"; exit 1; }
+          [ -z "$TOKEN" ] || { echo "::error::the token output was set"; exit 1; }
+          [ -z "${COMPOSER_AUTH:-}" ] || { echo "::error::COMPOSER_AUTH was written"; exit 1; }
+          # The readiness probe is a GET /; any other request means the step
+          # went on to the OIDC token or the STS exchange.
+          ! grep -v '^GET /$' "$RUNNER_TEMP/standin.log" || { echo "::error::the step requested a token before failing"; exit 1; }
+
   auth-failure:
     name: a rejected exchange fails the step and sets no token output
     runs-on: ubuntu-latest
